@@ -3,6 +3,7 @@ package io.github.andrea_lyz.assistrestore.ui
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import io.github.andrea_lyz.assistrestore.R
 
 /**
  * Backs the advanced page's "hide the launcher icon" switch.
@@ -36,5 +37,8 @@ internal object LauncherIcon {
     }
 
     private fun component(context: Context) =
-        ComponentName(context.packageName, context.packageName + LAUNCHER_ENTRY)
+        ComponentName(
+            context.packageName,
+            R::class.java.name.substringBeforeLast('.') + LAUNCHER_ENTRY,
+        )
 }

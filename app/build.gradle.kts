@@ -31,6 +31,17 @@ android {
         versionName = "1.0.8"
     }
 
+    // Kept separate from the upstream package so a fork-signed debug APK can be installed
+    // alongside it without replacing its app data or Xposed module entry.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("coloros15") {
+            dimension = "distribution"
+            applicationIdSuffix = ".coloros15"
+            versionName = "1.0.8-coloros15.1"
+        }
+    }
+
     buildFeatures {
         buildConfig = false
         compose = true

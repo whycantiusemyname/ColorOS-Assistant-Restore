@@ -1,0 +1,62 @@
+name: ColorOS 15 debug APK
+
+on:
+  push:
+    branches: [coloros15]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build installable ColorOS 15 APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK not found at $SDK"
+            exit 1
+          fi
+          if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
+            CMDLINE_TOOLS="$SDK/cmdline-tools/latest/bin"
+          else
+            CMDLINE_TOOLS="$(ls -d "$SDK"/cmdline-tools/*/bin 2>/dev/null | sort -V | tail -n1 || true)"
+          fi
+          if [ -z "$CMDLINE_TOOLS" ]; then
+            echo "::error::No Android SDK command-line tools found under $SDK"
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$CMDLINE_TOOLS" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          "$CMDLINE_TOOLS/sdkmanager" --install "platforms;android-37" "build-tools;36.1.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleColoros15Debug
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AssistRestore-v1.0.8-coloros15.1-debug
+          path: app/build/outputs/apk/coloros15/debug/*.apk
+          if-no-files-found: error

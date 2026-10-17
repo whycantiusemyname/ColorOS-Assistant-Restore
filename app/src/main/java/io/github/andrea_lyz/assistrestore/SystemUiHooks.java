@@ -89,6 +89,8 @@ final class SystemUiHooks {
     private static final String QUICK_STEP_CONTRACT =
             "com.android.systemui.shared.system.QuickStepContract";
     private static final String ASSIST_UTILS = "com.android.internal.app.AssistUtils";
+    /** AssistUtils accepts this sentinel to resolve the foreground user's assistant. */
+    private static final int USER_CURRENT = -2;
     private static final String DEPENDENCY = "com.android.systemui.Dependency";
     private static final String INTERNAL_BOOL_RES = "com.android.internal.R$bool";
     private static final String CTS_INTERFACE = "android.app.contextualsearch.IContextualSearchManager";
@@ -239,14 +241,20 @@ final class SystemUiHooks {
      */
     private static final class AssistPipeline {
         private final Method getAssistInfo;
+        /** Used only on firmware where AssistManager no longer exposes its assistant getter. */
+        private final Constructor<?> assistUtilsConstructor;
+        private final Method getAssistComponentForUser;
         private final Method getVoiceInteractorComponentName;
         private final Method startAssistInternal;
         /** {@code AssistManager.mContext}; the Android 17 overload takes it as an argument. */
         private final Field contextField;
 
-        private AssistPipeline(Method getAssistInfo, Method getVoiceInteractorComponentName,
+        private AssistPipeline(Method getAssistInfo, Constructor<?> assistUtilsConstructor,
+                Method getAssistComponentForUser, Method getVoiceInteractorComponentName,
                 Method startAssistInternal, Field contextField) {
             this.getAssistInfo = getAssistInfo;
+            this.assistUtilsConstructor = assistUtilsConstructor;
+            this.getAssistComponentForUser = getAssistComponentForUser;
             this.getVoiceInteractorComponentName = getVoiceInteractorComponentName;
             this.startAssistInternal = startAssistInternal;
             this.contextField = contextField;
@@ -255,7 +263,26 @@ final class SystemUiHooks {
         /** @return the component the request was sent to, or {@code null} when none is configured */
         Object dispatch(AssistRestoreModule module, Object assistManager, Bundle args)
                 throws Throwable {
-            Object assistInfo = getAssistInfo.invoke(assistManager);
+            Context context = contextOf(assistManager);
+            Object assistInfo;
+            if (getAssistInfo != null) {
+                assistInfo = getAssistInfo.invoke(assistManager);
+            } else if (assistUtilsConstructor != null && getAssistComponentForUser != null) {
+                if (context == null) {
+                    context = TargetIntents.appContext();
+                }
+                if (context == null) {
+                    module.logWarn("assist_dispatch_skipped reason=no_context_for_assist_utils");
+                    return null;
+                }
+                Object assistUtils = assistUtilsConstructor.newInstance(context);
+                assistInfo = getAssistComponentForUser.invoke(assistUtils, USER_CURRENT);
+                module.logInfo("assist_info_source source=AssistUtils.getAssistComponentForUser"
+                        + " userId=current");
+            } else {
+                module.logWarn("assist_dispatch_skipped reason=assist_info_unavailable");
+                return null;
+            }
             if (assistInfo == null) {
                 module.logWarn("assist_dispatch_skipped reason=no_assistant_configured");
                 return null;
@@ -266,7 +293,6 @@ final class SystemUiHooks {
                 return null;
             }
             ComponentName assistComponent = (ComponentName) assistInfo;
-            Context context = contextOf(assistManager);
             ensureVoiceInteractionService(module, context);
             Object voiceInteractor = getVoiceInteractorComponentName.invoke(assistManager);
             // ColorOS 17 does not always sync voice_interaction_service with the selected
@@ -331,16 +357,48 @@ final class SystemUiHooks {
             AssistRestoreModule module, ClassLoader classLoader) {
         try {
             Class<?> assistManager = Class.forName(ASSIST_MANAGER, true, classLoader);
+            // ColorOS 15 declares getAssistInfo() private. getMethod() only searches public
+            // methods, which made the whole SystemUI assist pipeline fail during initialization.
+            Method getAssistInfo = Refl.method(assistManager, "getAssistInfo");
+            Constructor<?> assistUtilsConstructor = null;
+            Method getAssistComponentForUser = null;
+            if (getAssistInfo != null) {
+                // Refl.method deliberately returns declared methods without changing accessibility;
+                // this getter is invoked directly by the gesture dispatch path.
+                try {
+                    getAssistInfo.setAccessible(true);
+                    module.logInfo("assist_info_source source=AssistManager.getAssistInfo"
+                            + " modifiers="
+                            + java.lang.reflect.Modifier.toString(getAssistInfo.getModifiers()));
+                } catch (Throwable inaccessible) {
+                    module.logWarn("assist_info_getter_inaccessible fallback=AssistUtils "
+                            + inaccessible);
+                    getAssistInfo = null;
+                }
+            }
+            if (getAssistInfo == null) {
+                Class<?> assistUtils = Class.forName(ASSIST_UTILS, false, classLoader);
+                assistUtilsConstructor = assistUtils.getConstructor(Context.class);
+                getAssistComponentForUser = assistUtils.getMethod(
+                        "getAssistComponentForUser", int.class);
+                module.logWarn("assist_info_getter_missing fallback=AssistUtils"
+                        + ".getAssistComponentForUser");
+            }
             // ColorOS 17 (Android 17) hands the display context to the dispatch method; ColorOS 16
             // carried the assist bundle alone.
             Method startAssistInternal = Refl.method(assistManager, "startAssistInternal",
                     Context.class, Bundle.class, ComponentName.class, boolean.class);
+            if (startAssistInternal != null) {
+                startAssistInternal.setAccessible(true);
+            }
             if (startAssistInternal == null) {
                 startAssistInternal = assistManager.getMethod("startAssistInternal",
                         Bundle.class, ComponentName.class, boolean.class);
             }
             return new AssistPipeline(
-                    assistManager.getMethod("getAssistInfo"),
+                    getAssistInfo,
+                    assistUtilsConstructor,
+                    getAssistComponentForUser,
                     assistManager.getMethod("getVoiceInteractorComponentName"),
                     startAssistInternal,
                     findContextField(assistManager));
